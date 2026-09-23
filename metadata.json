@@ -1,0 +1,8 @@
+{
+  "name": "CAD Viewer & Medição CNC (DWG/DXF)",
+  "description": "Visualizador CAD DXF/DWG com ferramenta de medição e cotagem em mm (tecla C), seleção inteligente e exportação limpa para corte CNC.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

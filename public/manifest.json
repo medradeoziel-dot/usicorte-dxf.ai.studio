@@ -1,0 +1,51 @@
+{
+  "id": "/",
+  "name": "DWG DXF Viewer",
+  "short_name": "CAD Viewer",
+  "description": "Visualizador e conversor de arquivos CAD DWG/DXF para corte CNC com ferramentas de medição em mm.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1a1a1a",
+  "theme_color": "#1a1a1a",
+  "lang": "pt-BR",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "file_handlers": [
+    {
+      "action": "/",
+      "name": "Desenho DXF/DWG",
+      "accept": {
+        "application/dxf": [".dxf"],
+        "image/vnd.dxf": [".dxf"],
+        "application/acad": [".dwg"]
+      }
+    }
+  ],
+  "share_target": {
+    "action": "/share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "file",
+          "accept": [".dxf", ".dwg", "application/dxf", "image/vnd.dxf"]
+        }
+      ]
+    }
+  }
+}

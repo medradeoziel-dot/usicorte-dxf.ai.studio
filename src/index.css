@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+:root {
+  --background: #0f141c;
+  --foreground: #f1f5f9;
+  --card: #151d28;
+  --card-foreground: #f1f5f9;
+  --primary: #00e5a3;
+  --primary-foreground: #091a14;
+  --secondary: #1c2736;
+  --secondary-foreground: #f1f5f9;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8;
+  --accent: #f59e0b;
+  --accent-foreground: #111827;
+  --destructive: #ef4444;
+  --destructive-foreground: #f8fafc;
+  --border: #243245;
+  --input: #1c2635;
+  --ring: #00e5a3;
+  --grid: rgba(255, 255, 255, 0.04);
+  --draw: #e2e8f0;
+  --dim: #00e5a3;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.panel {
+  background: linear-gradient(170deg, #151d29 0%, #101620 100%);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+}
+
+/* Custom scrollbar for technical UI */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0f141c;
+}
+::-webkit-scrollbar-thumb {
+  background: #243245;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #33465e;
+}
