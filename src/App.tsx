@@ -31,6 +31,7 @@ import {
   LayoutList,
   LayoutGrid,
   ArrowRightLeft,
+  FilePlus,
 } from 'lucide-react';
 import { DrawingCanvas, type UserMeasurement } from './components/DrawingCanvas';
 import { DxfThumbnail } from './components/DxfThumbnail';
@@ -297,13 +298,22 @@ export default function App() {
     loadDxfContent(sample.dxf, sample.filename);
   }
 
-  // Auto-load initial sample part on first open so user immediately sees the CAD viewer & measuring tool!
-  useEffect(() => {
-    const isShared = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('shared') === 'true';
-    if (!model && SAMPLE_PARTS[0] && !isShared) {
-      loadDxfContent(SAMPLE_PARTS[0].dxf, SAMPLE_PARTS[0].filename);
-    }
-  }, []);
+  // Clear current drawing and return to initial welcome/upload screen
+  function handleNewFile() {
+    setModel(null);
+    setDxfRawText(null);
+    setFilename('');
+    setOutputName('');
+    setSelectedIds(new Set());
+    setRemovedIds(new Set());
+    setMeasurements([]);
+    setFileQueue([]);
+    setQueueIndex(0);
+    setBatchCompleted(false);
+    setErrorMessage(null);
+    setStatusMessage(null);
+    showToast('Prancheta limpa. Pronto para carregar um novo arquivo.', 'info');
+  }
 
   // Native PWA Integration: File Handling API (double-click .dxf/.dwg in OS or open via WhatsApp)
   // and Web Share Target API (files shared into CAD Viewer from other apps)
@@ -590,6 +600,16 @@ export default function App() {
             <span>Converter DWG → DXF</span>
           </button>
 
+          {/* Botão Novo Arquivo */}
+          <button
+            onClick={handleNewFile}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/90 px-3.5 py-2 text-xs font-semibold text-slate-200 transition-all hover:bg-slate-700 hover:text-white shadow-md cursor-pointer"
+            title="Limpar desenho atual e voltar ao ecrã inicial de seleção"
+          >
+            <FilePlus className="h-4 w-4 text-emerald-400" />
+            <span>Novo Arquivo</span>
+          </button>
+
           {/* PWA Install Button */}
           <PWAInstallButton />
 
@@ -843,6 +863,15 @@ export default function App() {
               {/* Action pill toolbar */}
               <div className="absolute right-4 top-4 z-10 flex items-center gap-1.5 rounded-lg border border-slate-800 bg-[#0f141c]/95 p-1 shadow-lg">
                 <button
+                  onClick={handleNewFile}
+                  className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
+                  title="Fechar desenho atual e voltar ao ecrã inicial (Novo Arquivo)"
+                >
+                  <FilePlus className="h-3.5 w-3.5 text-emerald-400" />
+                  <span>Novo</span>
+                </button>
+
+                <button
                   onClick={toggleMeasuring}
                   className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors ${
                     measuring
@@ -903,31 +932,102 @@ export default function App() {
               />
             </>
           ) : (
-            <div className="flex h-full min-h-[500px] flex-col items-center justify-center gap-4 text-center p-6">
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-                <FileCode className="h-12 w-12 text-emerald-400 mx-auto stroke-[1.5]" />
-              </div>
-              <div>
-                <p className="font-mono text-base font-semibold text-slate-200">
-                  Arraste um arquivo .DXF ou .DWG aqui
+            <div className="flex h-full min-h-[580px] flex-col items-center justify-center p-6 text-center select-none">
+              {/* Dropzone Card */}
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                className="group relative flex w-full max-w-xl flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-700 bg-slate-900/50 p-8 transition-all hover:border-emerald-500/70 hover:bg-slate-900/80 cursor-pointer shadow-2xl backdrop-blur-sm"
+              >
+                <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 group-hover:scale-105 group-hover:bg-emerald-500/20 transition-all shadow-lg">
+                  <FileCode className="h-8 w-8 stroke-[1.75]" />
+                </div>
+
+                <h3 className="font-mono text-base font-bold text-white tracking-wide">
+                  Arraste e solte ficheiros DXF ou DWG aqui
+                </h3>
+                <p className="mt-1.5 max-w-md text-xs text-slate-400 leading-relaxed">
+                  Visualização vetorial precisa, inspeção de cotas em milímetros e preparação para corte CNC a plasma e laser.
                 </p>
-                <p className="mt-1 max-w-sm text-xs text-slate-400">
-                  Visualização vetorial precisa direto no navegador. Nenhum arquivo é enviado a servidores externos.
-                </p>
+
+                {/* Primary Button: Selecionar Arquivo do Dispositivo */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    fileInputRef.current?.click();
+                  }}
+                  className="mt-5 flex items-center gap-2.5 rounded-xl bg-emerald-400 px-6 py-2.5 font-mono text-xs font-bold text-slate-950 transition-all hover:bg-emerald-300 shadow-xl shadow-emerald-500/20 cursor-pointer"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  <span>Selecionar Arquivo do Dispositivo</span>
+                </button>
+
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[10px] font-mono text-slate-500">
+                  <span className="rounded bg-slate-800/80 px-2 py-0.5 border border-slate-700/60">AutoCAD R12 / 2000+</span>
+                  <span>·</span>
+                  <span className="rounded bg-slate-800/80 px-2 py-0.5 border border-slate-700/60">ASCII DXF & DWG</span>
+                  <span>·</span>
+                  <span className="rounded bg-slate-800/80 px-2 py-0.5 border border-slate-700/60">100% Local e Seguro</span>
+                </div>
               </div>
-              <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
-                <button
-                  onClick={() => handleLoadSample(0)}
-                  className="rounded-lg border border-emerald-500/40 bg-emerald-950/30 px-3.5 py-2 text-xs font-mono text-emerald-300 hover:bg-emerald-900/50 transition-colors"
-                >
-                  ⚡ Carregar Flange CNC (200mm)
-                </button>
-                <button
-                  onClick={() => handleLoadSample(1)}
-                  className="rounded-lg border border-slate-700 bg-slate-800/80 px-3.5 py-2 text-xs font-mono text-slate-300 hover:bg-slate-700 transition-colors"
-                >
-                  Carregar Chapa Angular (220×140mm)
-                </button>
+
+              {/* Sample Templates Section */}
+              <div className="mt-6 w-full max-w-xl text-left">
+                <div className="flex items-center gap-2 mb-2.5">
+                  <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+                  <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    Ou inicie com um gabarito de exemplo:
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Gabarito 1: Flange CNC */}
+                  <button
+                    type="button"
+                    onClick={() => handleLoadSample(0)}
+                    className="group flex items-center gap-3.5 rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-left transition-all hover:border-emerald-500/50 hover:bg-slate-800/80 cursor-pointer shadow-md"
+                  >
+                    <DxfThumbnail
+                      dxfText={SAMPLE_PARTS[0].dxf}
+                      width={44}
+                      height={44}
+                      className="rounded-lg bg-slate-950 border border-slate-800 shrink-0 group-hover:border-emerald-500/40"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-mono text-xs font-bold text-slate-200 group-hover:text-emerald-300 transition-colors flex items-center justify-between">
+                        <span>Flange CNC</span>
+                        <span className="text-[10px] font-normal text-emerald-400">Ø200mm</span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                        Furação circular com rasgo de chaveta
+                      </p>
+                    </div>
+                  </button>
+
+                  {/* Gabarito 2: Chapa Angular */}
+                  <button
+                    type="button"
+                    onClick={() => handleLoadSample(1)}
+                    className="group flex items-center gap-3.5 rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-left transition-all hover:border-sky-500/50 hover:bg-slate-800/80 cursor-pointer shadow-md"
+                  >
+                    <DxfThumbnail
+                      dxfText={SAMPLE_PARTS[1].dxf}
+                      width={44}
+                      height={44}
+                      strokeColor="#38bdf8"
+                      className="rounded-lg bg-slate-950 border border-slate-800 shrink-0 group-hover:border-sky-500/40"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-mono text-xs font-bold text-slate-200 group-hover:text-sky-300 transition-colors flex items-center justify-between">
+                        <span>Chapa Angular</span>
+                        <span className="text-[10px] font-normal text-sky-400">220×140mm</span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                        Chapa com alívios e furos oblongos
+                      </p>
+                    </div>
+                  </button>
+                </div>
               </div>
             </div>
           )}

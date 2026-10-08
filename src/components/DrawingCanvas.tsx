@@ -193,6 +193,41 @@ export function DrawingCanvas({
     initialBoundsRef.current = model.bounds;
   }
 
+  // Native non-passive wheel event listener to strictly isolate scroll/zoom to the canvas,
+  // preventing default browser page scrolling and zoom misalignment
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+
+    const handleNativeWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
+
+      setZoom((prevZoom) => {
+        const nextZoom = Math.min(40, Math.max(0.2, prevZoom * factor));
+        const ratio = nextZoom / prevZoom;
+        if (transform.current) {
+          const { ox, oy } = transform.current;
+          setPan((prevPan) => ({
+            x: prevPan.x + (mx - ox) * (1 - ratio),
+            y: prevPan.y + (my - oy) * (1 - ratio),
+          }));
+        }
+        return nextZoom;
+      });
+    };
+
+    canvas.addEventListener("wheel", handleNativeWheel, { passive: false });
+    return () => {
+      canvas.removeEventListener("wheel", handleNativeWheel);
+    };
+  }, []);
+
   // Compute selected shapes and automatic bounding box dimensions (X and Y)
   const selectedShapes = useMemo(() => {
     if (!selected || selected.size === 0) return [];
@@ -779,11 +814,12 @@ export function DrawingCanvas({
         : "cursor-crosshair";
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full overscroll-none touch-none select-none">
       <canvas
         ref={ref}
         tabIndex={0}
-        className={`h-full w-full select-none touch-none rounded-lg outline-none ${cursor}`}
+        style={{ overscrollBehavior: "none", touchAction: "none" }}
+        className={`h-full w-full select-none touch-none overscroll-none rounded-lg outline-none ${cursor}`}
         onContextMenu={(e) => e.preventDefault()}
         onPointerDown={(e) => {
           e.currentTarget.focus({ preventScroll: true });
@@ -1002,26 +1038,6 @@ export function DrawingCanvas({
           bandStart.current = null;
           setPanning(false);
           setBand(null);
-        }}
-        onWheel={(e) => {
-          e.preventDefault();
-          const rect = e.currentTarget.getBoundingClientRect();
-          const mx = e.clientX - rect.left;
-          const my = e.clientY - rect.top;
-          const factor = e.deltaY > 0 ? 0.9 : 1.1;
-
-          setZoom((prevZoom) => {
-            const nextZoom = Math.min(40, Math.max(0.2, prevZoom * factor));
-            const ratio = nextZoom / prevZoom;
-            if (transform.current) {
-              const { ox, oy } = transform.current;
-              setPan((prevPan) => ({
-                x: prevPan.x + (mx - ox) * (1 - ratio),
-                y: prevPan.y + (my - oy) * (1 - ratio),
-              }));
-            }
-            return nextZoom;
-          });
         }}
         onDoubleClick={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
