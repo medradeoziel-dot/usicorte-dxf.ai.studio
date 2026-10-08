@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type DxfModel, type Pt, type Shape, getShapesBounds, getConnectedShapeIds, type SelectionBounds } from "@/lib/dxf";
+import { type DxfModel, type Pt, type Shape, type Bounds, getShapesBounds, getConnectedShapeIds, type SelectionBounds } from "@/lib/dxf";
 
 export type UserMeasurement = {
   id: string;
@@ -15,11 +15,13 @@ export type UserMeasurement = {
 
 type Props = {
   model: DxfModel;
+  fileKey?: string;
   highlight?: number | null;
   selected?: Set<number>;
   /** replace = troca a seleção, toggle = adiciona/remove (Shift) */
   onSelect?: (ids: number[], mode: "replace" | "toggle") => void;
   onDelete?: () => void;
+  onUpdateShape?: (shape: Shape) => void;
   /** modo de medição (cotagem interativa) */
   measuring?: boolean;
   onMeasuringChange?: (v: boolean) => void;
@@ -119,12 +121,21 @@ function shapeCrossing(s: Shape, r: Rect) {
 
 type Band = { x0: number; y0: number; x1: number; y1: number };
 
+export type GripTarget = {
+  shapeId: number;
+  type: 'endpoint' | 'midpoint';
+  index: number; // 0 for start, pts.length - 1 for end, -1 for midpoint
+  pos: Pt;
+};
+
 export function DrawingCanvas({
   model,
+  fileKey,
   highlight,
   selected,
   onSelect,
   onDelete,
+  onUpdateShape,
   measuring = false,
   onMeasuringChange,
   measurements = [],
@@ -147,6 +158,41 @@ export function DrawingCanvas({
   const bandStart = useRef<{ x: number; y: number; shift: boolean } | null>(null);
   const transform = useRef<{ s: number; ox: number; oy: number } | null>(null);
 
+  // Grip (pega) manipulation for selected lines
+  const [hoveredGrip, setHoveredGrip] = useState<GripTarget | null>(null);
+  const [isDraggingGrip, setIsDraggingGrip] = useState<boolean>(false);
+  const [activeSnapPt, setActiveSnapPt] = useState<Pt | null>(null);
+  const activeGrip = useRef<{
+    shapeId: number;
+    type: 'endpoint' | 'midpoint';
+    index: number;
+    startPos: Pt;
+    origPts: Pt[];
+  } | null>(null);
+
+  // Multi-touch gestures (pinch-to-zoom)
+  const activePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchStartDist = useRef<number | null>(null);
+  const pinchStartZoom = useRef<number>(1);
+
+  // Track the file identity so zoom and pan are ONLY reset when opening a genuinely new file,
+  // NEVER on selection, deletion, or editing of shapes.
+  const lastFileKey = useRef<string | null>(null);
+  const initialBoundsRef = useRef<Bounds | null>(null);
+
+  useEffect(() => {
+    if (fileKey && fileKey !== lastFileKey.current) {
+      lastFileKey.current = fileKey;
+      initialBoundsRef.current = model.bounds;
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+    }
+  }, [fileKey, model.bounds]);
+
+  if (!initialBoundsRef.current) {
+    initialBoundsRef.current = model.bounds;
+  }
+
   // Compute selected shapes and automatic bounding box dimensions (X and Y)
   const selectedShapes = useMemo(() => {
     if (!selected || selected.size === 0) return [];
@@ -156,11 +202,6 @@ export function DrawingCanvas({
   const selBounds = useMemo(() => {
     return getShapesBounds(selectedShapes);
   }, [selectedShapes]);
-
-  useEffect(() => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  }, [model]);
 
   const toWorld = useCallback((sx: number, sy: number): Pt => {
     const t = transform.current!;
@@ -238,7 +279,8 @@ export function DrawingCanvas({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const { minX, minY, maxX, maxY } = model.bounds;
+    const boundsToUse = initialBoundsRef.current || model.bounds;
+    const { minX, minY, maxX, maxY } = boundsToUse;
     const bw = Math.max(maxX - minX, 1e-6);
     const bh = Math.max(maxY - minY, 1e-6);
     const base = Math.min((w - 48) / bw, (h - 48) / bh);
@@ -272,6 +314,114 @@ export function DrawingCanvas({
         ctx.arc(tx(shape.c.x), ty(shape.c.y), shape.r * s, -shape.end, -shape.start);
       }
       ctx.stroke();
+    }
+
+    // Render AutoCAD-style Grips (Pegas) on selected lines
+    for (const shape of selectedShapes) {
+      if (shape.kind === "line" && shape.pts.length >= 2) {
+        const isShapeDragging = activeGrip.current?.shapeId === shape.id;
+
+        // 1. Endpoint Grips (Squares)
+        shape.pts.forEach((pt, idx) => {
+          const sx = tx(pt.x);
+          const sy = ty(pt.y);
+          const isHot = isShapeDragging && activeGrip.current?.index === idx;
+          const isHover = hoveredGrip?.shapeId === shape.id && hoveredGrip?.index === idx;
+
+          ctx.save();
+          const size = 9;
+          ctx.lineWidth = 1.5;
+
+          if (isHot) {
+            ctx.fillStyle = "#ef4444"; // Red hot grip
+            ctx.strokeStyle = "#ffffff";
+          } else if (isHover) {
+            ctx.fillStyle = "#f59e0b"; // Amber highlight
+            ctx.strokeStyle = "#ffffff";
+          } else {
+            ctx.fillStyle = "#0284c7"; // Sky/AutoCAD grip blue
+            ctx.strokeStyle = "#ffffff";
+          }
+
+          ctx.fillRect(sx - size / 2, sy - size / 2, size, size);
+          ctx.strokeRect(sx - size / 2, sy - size / 2, size, size);
+          ctx.restore();
+        });
+
+        // 2. Midpoint Grip (Diamond) for translating the line
+        if (shape.pts.length === 2) {
+          const midX = (shape.pts[0].x + shape.pts[1].x) / 2;
+          const midY = (shape.pts[0].y + shape.pts[1].y) / 2;
+          const sx = tx(midX);
+          const sy = ty(midY);
+          const isHot = isShapeDragging && activeGrip.current?.type === "midpoint";
+          const isHover = hoveredGrip?.shapeId === shape.id && hoveredGrip?.type === "midpoint";
+
+          ctx.save();
+          const size = 8;
+          ctx.lineWidth = 1.5;
+          ctx.fillStyle = isHot ? "#ef4444" : isHover ? "#f59e0b" : "#0284c7";
+          ctx.strokeStyle = "#ffffff";
+
+          ctx.beginPath();
+          ctx.moveTo(sx, sy - size / 2);
+          ctx.lineTo(sx + size / 2, sy);
+          ctx.lineTo(sx, sy + size / 2);
+          ctx.lineTo(sx - size / 2, sy);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        // 3. Real-time length & delta HUD while dragging
+        if (isShapeDragging && shape.pts.length === 2) {
+          const p1 = shape.pts[0];
+          const p2 = shape.pts[1];
+          const length = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+          const dx = Math.abs(p2.x - p1.x);
+          const dy = Math.abs(p2.y - p1.y);
+          const midScreenX = (tx(p1.x) + tx(p2.x)) / 2;
+          const midScreenY = (ty(p1.y) + ty(p2.y)) / 2;
+
+          const hudText = `L = ${length.toFixed(2)} mm (ΔX: ${dx.toFixed(2)}, ΔY: ${dy.toFixed(2)})`;
+
+          ctx.save();
+          ctx.font = "bold 11px monospace";
+          const textW = ctx.measureText(hudText).width;
+          ctx.fillStyle = "rgba(10, 16, 26, 0.92)";
+          ctx.strokeStyle = "#38bdf8";
+          ctx.lineWidth = 1;
+
+          ctx.beginPath();
+          ctx.roundRect(midScreenX - textW / 2 - 8, midScreenY - 26, textW + 16, 20, 4);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = "#38bdf8";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(hudText, midScreenX, midScreenY - 16);
+          ctx.restore();
+        }
+      }
+    }
+
+    // Draw Snap indicator if snapped
+    if (activeSnapPt) {
+      const sx = tx(activeSnapPt.x);
+      const sy = ty(activeSnapPt.y);
+      ctx.save();
+      ctx.strokeStyle = "#22c55e"; // Green snap
+      ctx.lineWidth = 2;
+      ctx.strokeRect(sx - 7, sy - 7, 14, 14);
+      ctx.fillStyle = "rgba(34, 197, 94, 0.2)";
+      ctx.fillRect(sx - 7, sy - 7, 14, 14);
+
+      ctx.fillStyle = "#22c55e";
+      ctx.font = "bold 9px monospace";
+      ctx.fillText("SNAP", sx + 10, sy - 3);
+      ctx.restore();
     }
 
     model.dims.forEach((d) => {
@@ -516,6 +666,74 @@ export function DrawingCanvas({
     ctx.restore();
   }, [model, zoom, pan, highlight, selected, selBounds, showBoundingBox, band, measures, measurements, pending, hoverPt]);
 
+  function hitTestGrip(
+    sx: number,
+    sy: number,
+    shapes: Shape[],
+    t: { s: number; ox: number; oy: number } | null,
+    radius = 12
+  ): GripTarget | null {
+    if (!t) return null;
+    const tx = (x: number) => t.ox + x * t.s;
+    const ty = (y: number) => t.oy - y * t.s;
+
+    for (const shape of shapes) {
+      if (shape.kind === "line" && shape.pts.length >= 2) {
+        // Start endpoint (idx 0)
+        const p0 = shape.pts[0];
+        if (Math.hypot(sx - tx(p0.x), sy - ty(p0.y)) <= radius) {
+          return { shapeId: shape.id, type: "endpoint", index: 0, pos: p0 };
+        }
+        // End endpoint (idx length - 1)
+        const p1 = shape.pts[shape.pts.length - 1];
+        if (Math.hypot(sx - tx(p1.x), sy - ty(p1.y)) <= radius) {
+          return { shapeId: shape.id, type: "endpoint", index: shape.pts.length - 1, pos: p1 };
+        }
+        // Midpoint
+        if (shape.pts.length === 2) {
+          const mid = {
+            x: (p0.x + p1.x) / 2,
+            y: (p0.y + p1.y) / 2,
+          };
+          if (Math.hypot(sx - tx(mid.x), sy - ty(mid.y)) <= radius) {
+            return { shapeId: shape.id, type: "midpoint", index: -1, pos: mid };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function findSnapPoint(
+    worldPt: Pt,
+    allShapes: Shape[],
+    currentShapeId: number,
+    maxDistWorld: number
+  ): Pt | null {
+    let nearest: Pt | null = null;
+    let minDist = maxDistWorld;
+
+    for (const s of allShapes) {
+      if (s.id === currentShapeId) continue;
+      if (s.kind === "line") {
+        for (const p of s.pts) {
+          const d = Math.hypot(worldPt.x - p.x, worldPt.y - p.y);
+          if (d < minDist) {
+            minDist = d;
+            nearest = p;
+          }
+        }
+      } else if (s.kind === "circle" || s.kind === "arc") {
+        const d = Math.hypot(worldPt.x - s.c.x, worldPt.y - s.c.y);
+        if (d < minDist) {
+          minDist = d;
+          nearest = s.c;
+        }
+      }
+    }
+    return nearest;
+  }
+
   function pickAt(sx: number, sy: number): number | null {
     if (!transform.current) return null;
     const { s } = transform.current;
@@ -552,7 +770,13 @@ export function DrawingCanvas({
     onSelect?.(ids, shift ? "toggle" : "replace");
   }
 
-  const cursor = panning || spaceDown ? "cursor-grabbing" : "cursor-crosshair";
+  const cursor = panning || spaceDown
+    ? "cursor-grabbing"
+    : isDraggingGrip
+      ? "cursor-crosshair"
+      : hoveredGrip
+        ? "cursor-pointer"
+        : "cursor-crosshair";
 
   return (
     <div className="relative h-full w-full">
@@ -562,9 +786,42 @@ export function DrawingCanvas({
         className={`h-full w-full select-none touch-none rounded-lg outline-none ${cursor}`}
         onContextMenu={(e) => e.preventDefault()}
         onPointerDown={(e) => {
-          e.currentTarget.focus();
+          e.currentTarget.focus({ preventScroll: true });
           e.currentTarget.setPointerCapture(e.pointerId);
+
           const rect = e.currentTarget.getBoundingClientRect();
+          const sx = e.clientX - rect.left;
+          const sy = e.clientY - rect.top;
+
+          // Priority 1: Check if user clicked a grip handle on a selected line
+          if (selectedShapes.length > 0 && transform.current) {
+            const grip = hitTestGrip(sx, sy, selectedShapes, transform.current, 12);
+            if (grip) {
+              const shape = model.shapes.find((s) => s.id === grip.shapeId);
+              if (shape && shape.kind === "line") {
+                activeGrip.current = {
+                  shapeId: grip.shapeId,
+                  type: grip.type,
+                  index: grip.index,
+                  startPos: { ...grip.pos },
+                  origPts: shape.pts.map((p) => ({ ...p })),
+                };
+                setIsDraggingGrip(true);
+                setHoveredGrip(null);
+                return;
+              }
+            }
+          }
+
+          // Track touch points for pinch gestures
+          activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+          if (activePointers.current.size === 2) {
+            const pts = Array.from(activePointers.current.values());
+            pinchStartDist.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+            pinchStartZoom.current = zoom;
+            return;
+          }
+
           const isPan = e.button === 1 || (e.button === 0 && spaceDown);
           if (isPan) {
             setPanning(true);
@@ -601,6 +858,79 @@ export function DrawingCanvas({
           };
         }}
         onPointerMove={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const sx = e.clientX - rect.left;
+          const sy = e.clientY - rect.top;
+
+          // Priority 1: Live grip dragging (endpoint or midpoint)
+          if (activeGrip.current && transform.current) {
+            const worldP = toWorld(sx, sy);
+            let targetP = { ...worldP };
+
+            // Object Snap to nearby endpoints (approx 12 screen pixels)
+            const snapTolWorld = 12 / transform.current.s;
+            const snapPt = findSnapPoint(worldP, model.shapes, activeGrip.current.shapeId, snapTolWorld);
+            if (snapPt) {
+              targetP = { ...snapPt };
+              setActiveSnapPt(snapPt);
+            } else {
+              setActiveSnapPt(null);
+              // Orthogonal snapping if Shift is pressed
+              if (e.shiftKey && activeGrip.current.type === "endpoint") {
+                const targetShape = model.shapes.find((s) => s.id === activeGrip.current?.shapeId);
+                if (targetShape && targetShape.kind === "line") {
+                  const otherIdx = activeGrip.current.index === 0 ? targetShape.pts.length - 1 : 0;
+                  const fixedP = targetShape.pts[otherIdx];
+                  if (fixedP) {
+                    const dx = Math.abs(targetP.x - fixedP.x);
+                    const dy = Math.abs(targetP.y - fixedP.y);
+                    if (dx > dy) targetP.y = fixedP.y;
+                    else targetP.x = fixedP.x;
+                  }
+                }
+              }
+            }
+
+            // Real-time line modification
+            const targetShape = model.shapes.find((s) => s.id === activeGrip.current?.shapeId);
+            if (targetShape && targetShape.kind === "line") {
+              let newPts = [...targetShape.pts];
+              if (activeGrip.current.type === "endpoint") {
+                newPts[activeGrip.current.index] = targetP;
+              } else if (activeGrip.current.type === "midpoint") {
+                const dx = targetP.x - activeGrip.current.startPos.x;
+                const dy = targetP.y - activeGrip.current.startPos.y;
+                newPts = activeGrip.current.origPts.map((p) => ({
+                  x: p.x + dx,
+                  y: p.y + dy,
+                }));
+              }
+              onUpdateShape?.({ ...targetShape, pts: newPts });
+            }
+            return;
+          }
+
+          // Grip hover detection
+          if (!drag.current && !measuring && !bandStart.current && selectedShapes.length > 0 && transform.current) {
+            const grip = hitTestGrip(sx, sy, selectedShapes, transform.current, 12);
+            setHoveredGrip(grip);
+          } else if (hoveredGrip) {
+            setHoveredGrip(null);
+          }
+
+          activePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+          // Handle 2-finger pinch-to-zoom
+          if (activePointers.current.size === 2 && pinchStartDist.current != null) {
+            const pts = Array.from(activePointers.current.values());
+            const currentDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+            if (pinchStartDist.current > 0) {
+              const scaleFactor = currentDist / pinchStartDist.current;
+              setZoom(Math.min(40, Math.max(0.2, pinchStartZoom.current * scaleFactor)));
+            }
+            return;
+          }
+
           if (drag.current) {
             const nx = e.clientX - drag.current.x;
             const ny = e.clientY - drag.current.y;
@@ -616,13 +946,26 @@ export function DrawingCanvas({
           }
           const start = bandStart.current;
           if (!start) return;
-          const rect = e.currentTarget.getBoundingClientRect();
           const x = e.clientX - rect.left;
           const y = e.clientY - rect.top;
           if (Math.hypot(x - start.x, y - start.y) < 4) return;
           setBand({ x0: start.x, y0: start.y, x1: x, y1: y });
         }}
         onPointerUp={(e) => {
+          // If finishing a grip drag, commit and prevent accidental unselect
+          if (activeGrip.current) {
+            activeGrip.current = null;
+            setIsDraggingGrip(false);
+            setActiveSnapPt(null);
+            setHoveredGrip(null);
+            return;
+          }
+
+          activePointers.current.delete(e.pointerId);
+          if (activePointers.current.size < 2) {
+            pinchStartDist.current = null;
+          }
+
           if (drag.current) {
             drag.current = null;
             setPanning(false);
@@ -644,7 +987,17 @@ export function DrawingCanvas({
           if (id != null) onSelect?.([id], shift ? "toggle" : "replace");
           else if (!shift) onSelect?.([], "replace");
         }}
-        onPointerCancel={() => {
+        onPointerCancel={(e) => {
+          if (activeGrip.current) {
+            activeGrip.current = null;
+            setIsDraggingGrip(false);
+            setActiveSnapPt(null);
+            setHoveredGrip(null);
+          }
+          activePointers.current.delete(e.pointerId);
+          if (activePointers.current.size < 2) {
+            pinchStartDist.current = null;
+          }
           drag.current = null;
           bandStart.current = null;
           setPanning(false);
@@ -652,7 +1005,23 @@ export function DrawingCanvas({
         }}
         onWheel={(e) => {
           e.preventDefault();
-          setZoom((z) => Math.min(40, Math.max(0.2, z * (e.deltaY > 0 ? 0.9 : 1.1))));
+          const rect = e.currentTarget.getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          const my = e.clientY - rect.top;
+          const factor = e.deltaY > 0 ? 0.9 : 1.1;
+
+          setZoom((prevZoom) => {
+            const nextZoom = Math.min(40, Math.max(0.2, prevZoom * factor));
+            const ratio = nextZoom / prevZoom;
+            if (transform.current) {
+              const { ox, oy } = transform.current;
+              setPan((prevPan) => ({
+                x: prevPan.x + (mx - ox) * (1 - ratio),
+                y: prevPan.y + (my - oy) * (1 - ratio),
+              }));
+            }
+            return nextZoom;
+          });
         }}
         onDoubleClick={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();

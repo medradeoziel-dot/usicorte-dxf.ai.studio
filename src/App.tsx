@@ -28,13 +28,20 @@ import {
   CheckCircle,
   Clock,
   Plus,
+  LayoutList,
+  LayoutGrid,
+  ArrowRightLeft,
 } from 'lucide-react';
 import { DrawingCanvas, type UserMeasurement } from './components/DrawingCanvas';
+import { DxfThumbnail } from './components/DxfThumbnail';
+import { DwgConverterDialog } from './components/DwgConverterDialog';
 import { PWAInstallButton } from './components/PWAInstallButton';
+import { convertDwgToDxf } from './lib/dwgConverter';
 import {
   parseDxf,
   exportDxf,
   type DxfModel,
+  type Shape,
   type DxfExportFormat,
   getShapesBounds,
   getConnectedShapeIds,
@@ -94,6 +101,8 @@ export default function App() {
   const [fileQueue, setFileQueue] = useState<QueueItem[]>([]);
   const [queueIndex, setQueueIndex] = useState<number>(0);
   const [batchCompleted, setBatchCompleted] = useState<boolean>(false);
+  const [queueViewMode, setQueueViewMode] = useState<'list' | 'grid'>('list');
+  const [showDwgModal, setShowDwgModal] = useState<boolean>(false);
 
   // Notification toast
   const [toast, setToast] = useState<{ message: string; type: 'info' | 'success' | 'warning' } | null>(null);
@@ -165,24 +174,27 @@ export default function App() {
 
     setErrorMessage(null);
     const lowerName = item.name.toLowerCase();
-    if (lowerName.endsWith('.dwg')) {
-      showToast(
-        `Arquivo "${item.name}": Formato DWG binário proprietário. Para maior precisão, converta para DXF!`,
-        'warning'
-      );
-      setErrorMessage(
-        `O arquivo "${item.name}" é um DWG binário. Se houver falha de leitura, utilize arquivos DXF.`
-      );
-    }
 
     try {
+      // Auto-convert binary DWG files using the backend converter
+      if (lowerName.endsWith('.dwg')) {
+        setStatusMessage(`Convertendo arquivo DWG "${item.name}" para DXF via backend…`);
+        showToast(`Convertendo "${item.name}" de DWG para DXF via servidor…`, 'info');
+        const result = await convertDwgToDxf(item.file);
+        showToast(`"${item.name}" convertido com sucesso para DXF via ${result.engine}!`, 'success');
+        await loadDxfContent(result.dxf, result.filename);
+        setStatusMessage(null);
+        return;
+      }
+
       setStatusMessage(`Lendo arquivo ${index + 1} de ${list.length}: "${item.name}"…`);
       const text = await item.file.text();
       await loadDxfContent(text, item.name);
       setStatusMessage(null);
     } catch (err: any) {
       setStatusMessage(null);
-      setErrorMessage(`Erro ao ler "${item.name}": ` + err?.message);
+      setErrorMessage(`Erro ao carregar "${item.name}": ` + (err?.message || 'Falha no processamento.'));
+      showToast(`Erro ao abrir "${item.name}": ` + (err?.message || 'Falha na leitura'), 'warning');
     }
   }
 
@@ -356,6 +368,17 @@ export default function App() {
     });
   }
 
+  // Real-time interactive shape update (line grips dragging)
+  function handleUpdateShape(updatedShape: Shape) {
+    setModel((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        shapes: prev.shapes.map((s) => (s.id === updatedShape.id ? updatedShape : s)),
+      };
+    });
+  }
+
   // Delete selected shapes (Clean up for CNC)
   function deleteSelected() {
     if (selectedIds.size === 0) return;
@@ -508,22 +531,31 @@ export default function App() {
         {/* Header Action Buttons */}
         <div className="flex flex-wrap items-center gap-2.5">
           {/* Sample selector */}
-          <div className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900/90 p-1">
+          <div className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900/90 p-1">
             <span className="px-2 text-xs font-mono text-slate-400 flex items-center gap-1">
-              <Sparkles className="h-3.5 w-3.5 text-amber-400" /> Modelos CNC:
+              <Sparkles className="h-3.5 w-3.5 text-amber-400" /> Modelos:
             </span>
             {SAMPLE_PARTS.map((sample, idx) => (
               <button
                 key={sample.name}
                 onClick={() => handleLoadSample(idx)}
-                className={`rounded px-2.5 py-1 text-xs font-medium transition-all ${
+                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${
                   filename === sample.filename
                     ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                     : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                 }`}
                 title={sample.description}
               >
-                {sample.name.split(' ')[0]}
+                <DxfThumbnail
+                  dxfText={sample.dxf}
+                  width={20}
+                  height={20}
+                  showGrid={false}
+                  showHoverPreview={true}
+                  strokeColor={filename === sample.filename ? '#00e5a3' : '#94a3b8'}
+                  className="rounded bg-slate-950/80 border border-slate-700/60 shrink-0"
+                />
+                <span>{sample.name.split(' ')[0]}</span>
               </button>
             ))}
           </div>
@@ -546,6 +578,16 @@ export default function App() {
             {measuring && (
               <span className="flex h-2 w-2 rounded-full bg-slate-950 animate-ping" />
             )}
+          </button>
+
+          {/* Dedicated DWG to DXF Converter Button */}
+          <button
+            onClick={() => setShowDwgModal(true)}
+            className="flex items-center gap-2 rounded-lg border border-sky-500/50 bg-sky-950/40 px-3.5 py-2 text-xs font-semibold text-sky-300 transition-all hover:bg-sky-900/60 hover:text-white shadow-md cursor-pointer"
+            title="Converter arquivos AutoCAD .DWG em .DXF no backend"
+          >
+            <ArrowRightLeft className="h-4 w-4 text-sky-400" />
+            <span>Converter DWG → DXF</span>
           </button>
 
           {/* PWA Install Button */}
@@ -587,9 +629,14 @@ export default function App() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             {/* Visual Indicator: Arquivo X de Y: peça_01.dxf */}
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-500/20 text-sky-400 border border-sky-500/40 shadow-inner">
-                <ListOrdered className="h-5 w-5" />
-              </div>
+              <DxfThumbnail
+                file={fileQueue[queueIndex]?.file}
+                dxfText={dxfRawText || undefined}
+                width={42}
+                height={42}
+                showHoverPreview={true}
+                className="shrink-0 rounded-lg bg-slate-950/90 border border-sky-400/40 shadow-inner"
+              />
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-xs font-bold text-sky-300 uppercase tracking-wider">
@@ -766,10 +813,10 @@ export default function App() {
       )}
 
       {/* Main Workspace Layout */}
-      <section className="grid flex-1 gap-6 lg:grid-cols-[minmax(0,1fr)_390px]">
+      <section className="grid flex-1 gap-6 lg:grid-cols-[minmax(0,1fr)_390px] items-start">
         {/* CAD Canvas Viewport */}
         <div
-          className="panel relative flex flex-col min-h-[580px] rounded-xl p-2.5 overflow-hidden border border-slate-800"
+          className="panel relative flex flex-col h-[650px] min-h-[580px] rounded-xl p-2.5 overflow-hidden border border-slate-800"
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.preventDefault();
@@ -787,7 +834,8 @@ export default function App() {
                 <span className="text-slate-300">esq→dir:</span> janela ·{' '}
                 <span className="text-slate-300">dir→esq:</span> cruzamento ·{' '}
                 <span className="text-slate-300">Shift:</span> ortogonal/soma ·{' '}
-                <span className="text-slate-300">Espaço:</span> arrastar ·{' '}
+                <span className="text-slate-300">Espaço:</span> arrastar canvas ·{' '}
+                <span className="text-sky-300">Pegas:</span> arrastar pontas/meio da linha ·{' '}
                 <span className="text-amber-400">[Del/E]:</span> apagar ·{' '}
                 <span className="text-slate-300">[Esc]:</span> cancelar
               </div>
@@ -831,10 +879,12 @@ export default function App() {
               {/* Interactive CAD Canvas */}
               <DrawingCanvas
                 model={viewModel}
+                fileKey={filename}
                 highlight={hoveredDimId}
                 selected={selectedIds}
                 onSelect={handleSelect}
                 onDelete={deleteSelected}
+                onUpdateShape={handleUpdateShape}
                 measuring={measuring}
                 onMeasuringChange={setMeasuring}
                 measurements={measurements}
@@ -892,68 +942,160 @@ export default function App() {
                 <h2 className="font-mono text-xs uppercase tracking-[0.2em] text-sky-400 font-bold flex items-center gap-1.5">
                   <ListOrdered className="h-3.5 w-3.5" /> FILA DE ESPERA ({completedCount}/{fileQueue.length})
                 </h2>
-                <span className="font-mono text-[10px] text-sky-300 font-medium">
-                  {progressPct}% pronto
-                </span>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center rounded border border-sky-800/60 bg-sky-950/60 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setQueueViewMode('list')}
+                      className={`p-1 rounded text-xs transition-colors cursor-pointer ${
+                        queueViewMode === 'list'
+                          ? 'bg-sky-500 text-slate-950'
+                          : 'text-sky-300 hover:text-white'
+                      }`}
+                      title="Exibição em Lista com Miniaturas"
+                    >
+                      <LayoutList className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQueueViewMode('grid')}
+                      className={`p-1 rounded text-xs transition-colors cursor-pointer ${
+                        queueViewMode === 'grid'
+                          ? 'bg-sky-500 text-slate-950'
+                          : 'text-sky-300 hover:text-white'
+                      }`}
+                      title="Exibição em Grade com Miniaturas"
+                    >
+                      <LayoutGrid className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <span className="font-mono text-[10px] text-sky-300 font-medium">
+                    {progressPct}% pronto
+                  </span>
+                </div>
               </div>
 
-              <div className="mt-2 max-h-[170px] overflow-y-auto space-y-1.5 pr-1 font-mono text-xs">
-                {fileQueue.map((item, idx) => {
-                  const isActive = idx === queueIndex;
-                  return (
-                    <div
-                      key={item.id}
-                      onClick={() => void loadQueueItem(idx)}
-                      className={`group flex items-center justify-between rounded-lg px-2.5 py-1.5 transition-all cursor-pointer border ${
-                        isActive
-                          ? 'border-sky-400 bg-sky-900/50 text-white shadow-sm ring-1 ring-sky-400/40'
-                          : item.status === 'completed'
-                            ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300 hover:bg-emerald-950/40'
-                            : item.status === 'skipped'
-                              ? 'border-amber-500/30 bg-amber-950/20 text-amber-300 hover:bg-amber-950/40'
-                              : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:bg-slate-800/80 hover:text-slate-200'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        {item.status === 'completed' ? (
-                          <CheckCircle className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-                        ) : item.status === 'skipped' ? (
-                          <span className="text-amber-400 font-bold shrink-0 text-xs">⊘</span>
-                        ) : isActive ? (
-                          <span className="h-2 w-2 rounded-full bg-sky-400 shrink-0 animate-ping" />
-                        ) : (
-                          <Clock className="h-3.5 w-3.5 text-slate-500 shrink-0" />
-                        )}
-                        <div className="truncate">
-                          <span className="truncate block font-medium text-[11px]">{item.name}</span>
-                          <span className="text-[9px] text-slate-500">{formatFileSize(item.size)}</span>
+              {queueViewMode === 'list' ? (
+                <div className="mt-2 max-h-[220px] overflow-y-auto space-y-1.5 pr-1 font-mono text-xs">
+                  {fileQueue.map((item, idx) => {
+                    const isActive = idx === queueIndex;
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => void loadQueueItem(idx)}
+                        className={`group flex items-center justify-between rounded-lg p-1.5 transition-all cursor-pointer border ${
+                          isActive
+                            ? 'border-sky-400 bg-sky-900/50 text-white shadow-sm ring-1 ring-sky-400/40'
+                            : item.status === 'completed'
+                              ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300 hover:bg-emerald-950/40'
+                              : item.status === 'skipped'
+                                ? 'border-amber-500/30 bg-amber-950/20 text-amber-300 hover:bg-amber-950/40'
+                                : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:bg-slate-800/80 hover:text-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <DxfThumbnail
+                            file={item.file}
+                            width={38}
+                            height={38}
+                            showHoverPreview={true}
+                            strokeColor={isActive ? '#38bdf8' : item.status === 'completed' ? '#10b981' : '#00e5a3'}
+                            className="shrink-0 rounded bg-slate-950/90 border border-slate-800"
+                          />
+                          <div className="truncate">
+                            <div className="flex items-center gap-1.5">
+                              {item.status === 'completed' ? (
+                                <CheckCircle className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                              ) : item.status === 'skipped' ? (
+                                <span className="text-amber-400 font-bold shrink-0 text-xs">⊘</span>
+                              ) : isActive ? (
+                                <span className="h-2 w-2 rounded-full bg-sky-400 shrink-0 animate-ping" />
+                              ) : (
+                                <Clock className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+                              )}
+                              <span className="truncate block font-medium text-[11px]">{item.name}</span>
+                            </div>
+                            <span className="text-[9px] text-slate-500 block pl-5">{formatFileSize(item.size)}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 ml-2 shrink-0">
+                          {isActive && (
+                            <span className="rounded bg-sky-400/25 px-1.5 py-0.5 text-[9px] font-bold text-sky-200 uppercase">
+                              Atual
+                            </span>
+                          )}
+                          {item.status === 'completed' && !isActive && (
+                            <span className="text-[9px] text-emerald-400 font-semibold">Salvo</span>
+                          )}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRemoveFromQueue(item.id);
+                            }}
+                            className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 p-0.5 transition-opacity"
+                            title="Remover da fila"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
                         </div>
                       </div>
-
-                      <div className="flex items-center gap-1.5 ml-2 shrink-0">
-                        {isActive && (
-                          <span className="rounded bg-sky-400/25 px-1.5 py-0.5 text-[9px] font-bold text-sky-200 uppercase">
-                            Atual
-                          </span>
-                        )}
-                        {item.status === 'completed' && !isActive && (
-                          <span className="text-[9px] text-emerald-400 font-semibold">Salvo</span>
-                        )}
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="mt-2.5 grid grid-cols-2 gap-2 max-h-[260px] overflow-y-auto pr-1">
+                  {fileQueue.map((item, idx) => {
+                    const isActive = idx === queueIndex;
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => void loadQueueItem(idx)}
+                        className={`group flex flex-col items-center rounded-lg p-2 transition-all cursor-pointer border text-center relative ${
+                          isActive
+                            ? 'border-sky-400 bg-sky-900/40 text-white ring-1 ring-sky-400/40'
+                            : item.status === 'completed'
+                              ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300 hover:bg-emerald-950/30'
+                              : item.status === 'skipped'
+                                ? 'border-amber-500/30 bg-amber-950/20 text-amber-300 hover:bg-amber-950/30'
+                                : 'border-slate-800 bg-slate-900/60 text-slate-300 hover:bg-slate-800/80 hover:text-white'
+                        }`}
+                      >
+                        <DxfThumbnail
+                          file={item.file}
+                          width={82}
+                          height={62}
+                          showBadge={true}
+                          showHoverPreview={true}
+                          strokeColor={isActive ? '#38bdf8' : item.status === 'completed' ? '#10b981' : '#00e5a3'}
+                          className="rounded bg-slate-950/90 border border-slate-800/80 mb-1.5"
+                        />
+                        <span className="truncate w-full font-medium text-[10px] block" title={item.name}>
+                          {item.name}
+                        </span>
+                        <div className="flex items-center justify-between w-full mt-1 text-[9px] font-mono text-slate-500">
+                          <span>{formatFileSize(item.size)}</span>
+                          {isActive ? (
+                            <span className="text-sky-300 font-bold uppercase text-[8px] bg-sky-500/20 px-1 rounded">Atual</span>
+                          ) : item.status === 'completed' ? (
+                            <span className="text-emerald-400 font-bold text-[8px]">Salvo</span>
+                          ) : null}
+                        </div>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             handleRemoveFromQueue(item.id);
                           }}
-                          className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 p-0.5 transition-opacity"
+                          className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 p-0.5 transition-opacity rounded bg-slate-900/80"
                           title="Remover da fila"
                         >
                           <Trash2 className="h-3 w-3" />
                         </button>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -1385,6 +1527,13 @@ export default function App() {
           )}
         </aside>
       </section>
+
+      {/* DWG to DXF Converter Dialog */}
+      <DwgConverterDialog
+        open={showDwgModal}
+        onOpenChange={setShowDwgModal}
+        onLoadDxf={(dxfText, fname) => void loadDxfContent(dxfText, fname)}
+      />
     </div>
   );
 }
